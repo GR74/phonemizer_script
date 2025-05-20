@@ -28,12 +28,23 @@ Phonemizer is an interactive GUI tool for converting words and phrases into ARPA
 **📂 Output Structure**
 
 /eeg
+
+
     DLR_*.txt        ← raw EEG files per phoneme
+
+    
 /eeg_culmination_csv
+
+
     hello_world.tsv  ← tab-separated EEG data
+    hello_world_eeg.csv  ← formatted CSV with timestamp & channel columns
+
+
+    
 /eeg_culmination_txt
+
     hello_world.txt  ← mirrored copy of TSV
-hello_world_eeg.csv  ← formatted CSV with timestamp & channel columns
+    
 
 **🛠 Technologies Used**
 
