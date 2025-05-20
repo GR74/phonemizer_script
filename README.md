@@ -46,21 +46,11 @@ pyttsx3 – Offline text-to-speech
 
 pyperclip – Clipboard integration
 
-🚀 Getting Started
-bash
-Copy
-Edit
-pip install pandas pyttsx3 pyperclip nltk g2p_en
-And run:
-
-bash
-Copy
-Edit
 python phoneme_pronouncer_pro.py
 🧪 Sample Use Case
 Type in: hello world
 View: HH AH L OW, W ER L D
-Output: EEG .tsv + .txt + .csv files for each mapped phoneme, with randomized inter-word EEG buffer segments.
+Output: EEG .tsv + .txt + .csv files with each mapped phoneme, with randomized inter-word EEG buffer segments.
 
 🧠 Potential Applications
 Neuroscience / EEG research
