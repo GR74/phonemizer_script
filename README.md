@@ -23,9 +23,7 @@ Phonemizer is an interactive GUI tool for converting words and phrases into ARPA
 💻 User-Friendly GUI: Built with tkinter for smooth interaction.
 
 📂 Output Structure
-sql
-Copy
-Edit
+
 /eeg
     DLR_*.txt        ← raw EEG files per phoneme
 /eeg_culmination_csv
@@ -33,6 +31,7 @@ Edit
 /eeg_culmination_txt
     hello_world.txt  ← mirrored copy of TSV
 hello_world_eeg.csv  ← formatted CSV with timestamp & channel columns
+
 🛠 Technologies Used
 Python 3
 
