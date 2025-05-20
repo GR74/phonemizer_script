@@ -1,5 +1,5 @@
-🎙️ Phoneme Pronouncer Pro
-Phoneme Pronouncer Pro is an interactive GUI tool for converting words and phrases into ARPAbet phoneme sequences, generating corresponding EEG signal slices for each phoneme, and exporting synchronized .tsv, .csv, and .txt files for downstream analysis or modeling.
+**🎙️ Phonemizer**
+Phonemizer is an interactive GUI tool for converting words and phrases into ARPAbet phoneme sequences, generating corresponding EEG signal slices for each phoneme, and exporting synchronized .tsv, .csv, and .txt files for downstream analysis or modeling.
 
 🔬 Core Features
 🧠 Phoneme Extraction: Converts user input into ARPAbet phoneme sequences using CMU Dictionary and G2P fallback.
