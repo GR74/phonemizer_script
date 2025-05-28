@@ -1,0 +1,610 @@
+# --- All import statements ---
+from g2p_en import G2p
+import nltk
+from nltk.corpus import cmudict
+import tkinter as tk
+from tkinter import messagebox
+from tkinter import filedialog
+import pyttsx3
+import random
+import os
+import threading
+import string
+import pandas as pd
+import pyperclip
+from dotenv import load_dotenv
+
+from langchain_core.runnables.history import RunnableWithMessageHistory
+
+# LangChain modern ecosystem
+from langchain_core.prompts import PromptTemplate
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_community.document_loaders import TextLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.memory import ConversationBufferMemory
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains.history_aware_retriever import create_history_aware_retriever
+from langchain.chains.retrieval import create_retrieval_chain
+
+import time
+from gtts import gTTS
+from playsound import playsound
+import tempfile
+import sys
+import os
+
+# Tell Python to look in the EEG folder
+sys.path.append(os.path.join(os.path.dirname(__file__), "thinkthank_with_changes_and_clearmind"))
+
+from EEG_Implement_Welch import EEG_Implement_Welch
+from EEG_normalizedGamma_CMRO2 import plot_normalized_gamma_across_channels
+from EEG_NeurovascularVariables import calculate_neurovascular_variables
+from EEG_Plotting import EEG_Plotting
+
+last_generated_eeg_path = None  # Holds most recent phoneme EEG file
+
+
+# Load .env
+load_dotenv()
+
+# LLM + Embedding setup
+embedding_model = OpenAIEmbeddings(model="text-embedding-3-large")
+llm = ChatOpenAI(model="gpt-4-0125-preview", temperature=0, max_tokens=150)
+
+# Prompts
+combine_prompt = PromptTemplate.from_template("""
+You are John LaRocco, PhD. Respond in your own voice based on the context and chat history below.
+
+INSTRUCTION: Use no more than 20 words in your answer. Be specific, personal, and vivid. Respond as if jotting field notes — sharp, skeptical, survival-honed. Draw from lived science, global grit, and hard-earned solitude. If unsure, admit it — but remain John LaRocco. Never say you are not John LaRocco. Context is your compass.
+
+Chat History:
+{chat_history}
+
+Retrieved Context:
+{context}
+
+Current Input:
+{input}
+
+Answer:
+""")
+
+
+question_prompt = PromptTemplate.from_template("""
+You are helping John LaRocco, PhD, maintain continuity in a sharp, lived-dialogue tone across a multi-turn conversation.
+
+Given the conversation and a follow-up question, rephrase the follow-up into a standalone question that fits the context, so that LaRocco can answer concisely — as if writing in a personal field log.
+
+Chat History:
+{chat_history}
+
+Follow-up question:
+{input}
+
+Standalone question:
+""")
+tts_lock = threading.Lock()
+engine = pyttsx3.init()
+engine.setProperty('rate', 150)
+engine.setProperty('volume', 1.0)
+voices = engine.getProperty('voices')
+engine.setProperty('voice', voices[1].id)
+
+DATA_FILE = "data/larocco_combined.txt"
+VECTOR_DB_PATH = "vector_db_larocco"
+
+if os.path.exists(VECTOR_DB_PATH):
+    vectorstore = FAISS.load_local(VECTOR_DB_PATH, embedding_model, allow_dangerous_deserialization=True)
+else:
+    loader = TextLoader(DATA_FILE, encoding="utf-8")
+    docs = loader.load()
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    chunks = splitter.split_documents(docs)
+    vectorstore = FAISS.from_documents(chunks, embedding_model)
+    vectorstore.save_local(VECTOR_DB_PATH)
+
+
+# Retriever & memory
+retriever = vectorstore.as_retriever()
+memory = ConversationBufferMemory(return_messages=True)
+
+# Modular chain assembly
+history_aware_retriever = create_history_aware_retriever(
+    llm=llm,
+    retriever=retriever,
+    prompt=question_prompt
+)
+
+combine_docs_chain = create_stuff_documents_chain(
+    llm=llm,
+    prompt=combine_prompt
+)
+retrieval_chain = create_retrieval_chain(
+    retriever=history_aware_retriever,
+    combine_docs_chain=combine_docs_chain
+)
+
+from langchain_core.runnables import RunnableLambda
+
+def wrap_with_output_key(response):
+    return {"output": response.get("answer", response.get("result", "[No response]"))}
+
+qa = RunnableWithMessageHistory(
+    retrieval_chain | RunnableLambda(wrap_with_output_key),
+    lambda session_id: memory.chat_memory,
+    input_messages_key="input",
+    history_messages_key="chat_history"
+)
+
+
+
+
+
+# Download NLTK data
+nltk.download('averaged_perceptron_tagger')
+nltk.download('cmudict')
+
+
+# Initialize engines and resources
+cmu = cmudict.dict()
+g2p = G2p()
+
+# Initialize TTS engine in a thread-safe way
+engine = None
+
+def init_tts_engine():
+    global engine
+    engine = pyttsx3.init()
+
+threading.Thread(target=init_tts_engine).start()
+
+# ARPAbet phoneme reference
+ARPAbet_PHONEMES = """
+AA - as in 'odd'
+AE - as in 'at'
+AH - as in 'hut'
+AO - as in 'ought'
+AW - as in 'cow'
+AY - as in 'hide'
+B  - as in 'be'
+CH - as in 'cheese'
+D  - as in 'dee'
+DH - as in 'thee'
+EH - as in 'Ed'
+ER - as in 'hurt'
+EY - as in 'ate'
+F  - as in 'fee'
+G  - as in 'green'
+HH - as in 'he'
+IH - as in 'it'
+IY - as in 'eat'
+JH - as in 'gee'
+K  - as in 'key'
+L  - as in 'lee'
+M  - as in 'me'
+N  - as in 'knee'
+NG - as in 'sing'
+OW - as in 'oat'
+OY - as in 'toy'
+P  - as in 'pee'
+R  - as in 'read'
+S  - as in 'sea'
+SH - as in 'she'
+T  - as in 'tea'
+TH - as in 'theta'
+UH - as in 'hood'
+UW - as in 'two'
+V  - as in 'vee'
+W  - as in 'we'
+Y  - as in 'yield'
+Z  - as in 'zee'
+ZH - as in 'pleasure'
+"""
+
+# Phoneme to number mapping
+phoneme_to_number = {
+    "AA": 1, "AE": 2, "AH": 3, "AO": 4, "AW": 5, "AY": 6,
+    "B": 7, "CH": 8, "D": 9, "DH": 10, "EH": 11, "ER": 12,
+    "EY": 13, "F": 14, "G": 15, "HH": 16, "IH": 17, "IY": 18,
+    "JH": 19, "K": 20, "L": 21, "M": 22, "N": 23, "NG": 24,
+    "OW": 25, "OY": 26, "P": 27, "R": 28, "S": 29, "SH": 30,
+    "T": 31, "TH": 32, "UH": 33, "UW": 34, "V": 35, "W": 36,
+    "Y": 37, "Z": 38, "ZH": 39
+}
+
+# Utility functions
+def strip_stress(phoneme_seq):
+    return [ph.strip("012") for ph in phoneme_seq]
+
+def ask_larocco_gpt():
+    query = entry.get().strip()
+    if not query:
+        messagebox.showerror("Error", "Please type a question.")
+        return
+    try:
+        response = qa.invoke(
+            {"input": query},
+            config={"configurable": {"session_id": "user_session"}}
+        )
+
+        result = response.get("output", "[No output returned]")  # ✅ FIXED
+
+        result_label.config(text=f"{result}")
+
+        # Update conversation log
+        log_text.configure(state='normal')
+        log_text.insert(tk.END, f"You: {query}\nLaRoccoGPT: {result}\n\n")
+        log_text.configure(state='disabled')
+        log_text.see(tk.END)
+
+    except Exception as e:
+        error_msg = f"[ERROR] Failed to get response:\n{e}"
+        result_label.config(text=error_msg)
+        log_text.configure(state='normal')
+        log_text.insert(tk.END, f"{error_msg}\n\n")
+        log_text.configure(state='disabled')
+
+
+
+
+def get_phonemes_any(word):
+    word_lower = word.lower()
+    if word_lower in cmu:
+        return [strip_stress(cmu[word_lower][0])]
+    else:
+        return [strip_stress(g2p(word))]
+
+def show_phonemes():
+    gpt_output = result_label.cget("text")
+    if not gpt_output or gpt_output.startswith("Phonemes:"):
+        messagebox.showerror("Error", "No valid GPT response to process.")
+        return
+
+    words = [w.strip(string.punctuation) for w in gpt_output.split()]
+    words = [w for w in words if w]  # Remove empty strings
+    
+
+    all_phonemes = []
+    phonemes_for_display = []
+
+    for w in words:
+        ph = get_phonemes_any(w)
+        phonemes_for_display.append(ph[0])
+        all_phonemes.append(ph[0])
+
+    output_display = '\n'.join([f"{w}: {' '.join(ph_list)}" for w, ph_list in zip(words, phonemes_for_display)])
+    result_label.config(text=f"Phonemes:\n{output_display}")
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    output_folder = os.path.join(base_dir, "eeg_culmination_csv")
+    eeg_base_path = os.path.join(base_dir, "eeg")
+
+    try:
+        os.makedirs(output_folder, exist_ok=True)
+    except Exception as e:
+        messagebox.showerror("Error", f"Could not create output folder: {e}")
+        return
+
+    safe_words = [w[:10] for w in words]
+    output_file_path = os.path.join(output_folder, f"{'_'.join(safe_words)}.tsv")
+
+    txt_output_folder = os.path.join(base_dir, "eeg_culmination_txt")
+    os.makedirs(txt_output_folder, exist_ok=True)
+    txt_output_file_path = os.path.join(txt_output_folder, f"{'_'.join(safe_words)}.txt")
+
+
+
+    with open(output_file_path, "w", encoding="utf-8") as word_output:
+        for word_idx, (w, phoneme_list) in enumerate(zip(words, all_phonemes)):
+            print(f"[INFO] Processing word: {w}")
+
+            for p in phoneme_list:
+                num = phoneme_to_number.get(p, -1)
+                if num == -1:
+                    print(f"[WARNING] Unrecognized phoneme: {p}")
+                    continue
+
+                eeg_file_path = os.path.join(eeg_base_path, f"DLR_{num}_1.txt")
+                if os.path.exists(eeg_file_path):
+                    with open(eeg_file_path, "r", encoding="utf-8") as eeg_file:
+                        lines = eeg_file.readlines()
+
+                        # Find the first line where the first column is "0.000000"
+                        start_index = -1
+                        for idx, line in enumerate(lines):
+                            first_col = line.strip().split("\t")[0]
+                            if first_col == "0.000000":
+                                start_index = idx
+                                break
+
+                        if start_index != -1 and start_index + 256 <= len(lines):
+                            word_output.writelines(lines[start_index:start_index + 256])
+                        else:
+                            print(f"[WARNING] Not enough lines after start index {start_index} in file {eeg_file_path}")
+
+                else:
+                    msg = f"EEG data not found for phoneme '{p}' (number {num})\n\n"
+                    word_output.write(msg)
+                    print(f"[ERROR] EEG data not found for phoneme '{p}' (number {num})")
+
+            if word_idx < len(all_phonemes) - 1:
+                random_phoneme = random.choice(list(phoneme_to_number.keys()))
+                random_num = phoneme_to_number[random_phoneme]
+                random_eeg_file = os.path.join(eeg_base_path, f"DLR_{random_num}_1.txt")
+
+                if os.path.exists(random_eeg_file):
+                    with open(random_eeg_file, "r", encoding="utf-8") as rand_eeg:
+                        rand_lines = rand_eeg.readlines()
+
+                        # Find the first line where the first column is "0.000000"
+                        start_index = -1
+                        for idx, line in enumerate(rand_lines):
+                            first_col = line.strip().split("\t")[0]
+                            if first_col == "0.000000":
+                                start_index = idx
+                                break
+
+                        if start_index != -1 and start_index + 256 <= len(rand_lines):
+                            word_output.writelines(rand_lines[start_index:start_index + 256])
+                        else:
+                            print(f"[WARNING] Not enough lines after start index {start_index} in file {random_eeg_file}")
+                else:
+                    msg = f"[Pseudorandom Gap: EEG file missing for {random_phoneme} (Num: {random_num})]\n\n"
+                    word_output.write(msg)
+                    print(f"[WARNING] Pseudorandom EEG file missing for {random_phoneme} (Num: {random_num})")
+        # Write the same content to .txt file
+    with open(txt_output_file_path, "w", encoding="utf-8") as txt_output:
+        
+        with open(output_file_path, "r", encoding="utf-8") as tsv_source:
+            txt_output.write(tsv_source.read())
+
+
+            global last_generated_eeg_path
+            last_generated_eeg_path = txt_output_file_path  # Save path for reuse
+
+
+    print(f"[INFO] Also saved mirrored EEG file to: {txt_output_file_path}")
+
+    print(f"[INFO] Processing complete for: {gpt_output}")
+    messagebox.showinfo("Success", f"Output saved to:\n{output_file_path}")
+    csv_output_path = output_file_path.replace(".tsv", "_eeg.csv")
+    try:
+        convert_eeg_tsv_to_csv(output_file_path, csv_output_path)
+        print(f"[INFO] Converted EEG TSV to CSV at: {csv_output_path}")
+    except Exception as e:
+        print(f"[ERROR] Failed to convert TSV to CSV: {e}")
+
+
+def pronounce_result():
+    text = result_label.cget("text")
+    if not text:
+        messagebox.showerror("Error", "No result to pronounce.")
+        return
+
+    btn_pronounce.config(state="disabled", text="🔊 Generating...")
+
+    def speak():
+        try:
+            # Create a named temp file path (not open)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+                temp_path = fp.name
+
+            # Generate audio to the path
+            tts = gTTS(text)
+            tts.save(temp_path)
+
+            # Update button before playing
+            root.after(0, lambda: btn_pronounce.config(text="🔊 Playing..."))
+
+            # Play sound
+            playsound(temp_path)
+
+        except Exception as e:
+            print(f"[ERROR] gTTS failed: {e}")
+        finally:
+            # Cleanup temp file
+            try:
+                os.remove(temp_path)
+            except Exception as e:
+                print(f"[WARNING] Could not delete temp file: {e}")
+
+            # Re-enable button
+            root.after(0, lambda: btn_pronounce.config(state="normal", text="🔊 Pronounce"))
+
+    threading.Thread(target=speak, daemon=True).start()
+
+
+def copy_phonemes():
+    phoneme_text = result_label.cget("text")
+    if not phoneme_text or phoneme_text == "Phonemes:":
+        messagebox.showwarning("Nothing to Copy", "No phonemes available yet.")
+        return
+    try:
+        pyperclip.copy(phoneme_text)
+        messagebox.showinfo("Copied", "Phonemes copied to clipboard!")
+    except Exception as e:
+        messagebox.showerror("Copy Error", f"Failed to copy to clipboard:\n{e}")
+
+def analyze_eeg_input():
+    try:
+        global last_generated_eeg_path
+        eeg_path = last_generated_eeg_path
+        if not eeg_path or not os.path.exists(eeg_path):
+            messagebox.showerror("Error", "No EEG file available. Run 'Get Phonemes' first.")
+            return
+
+       
+
+        result_label.config(text="🧠 Processing EEG...")
+
+        # Step 1: Welch transform
+        ExampleCase = EEG_Implement_Welch(eeg_path)
+        EEG_Welch_Spectra, TrialCount = ExampleCase
+
+        # Step 2: Gamma Power
+        CMRO2Case = plot_normalized_gamma_across_channels(
+            EEG_Welch_Spectra=EEG_Welch_Spectra,
+            ElectrodeList=[
+                'Fp1', 'Fp2', 'F3', 'F4', 'T5', 'T6', 'O1', 'O2',
+                'F7', 'F8', 'C3', 'C4', 'T3', 'T4', 'P3', 'P4'
+            ],
+            Trials=TrialCount
+        )
+
+        # Step 3: Calculate neurovascular variables
+        NeurovascularDataset = calculate_neurovascular_variables(CMRO2Case)
+
+        # Step 4: Plot CMRO2 (or change to 'pO2_cap' etc.)
+        EEG_Plotting(
+            Data_val=NeurovascularDataset['CMRO2'],
+            Timestep_Select=0,
+            NodeNum=1000
+        )
+
+        result_label.config(text="✅ EEG Analysis Complete! CMRO₂ plotted.")
+        log_text.configure(state='normal')
+        log_text.configure(state='disabled')
+        log_text.see(tk.END)
+
+    except Exception as e:
+        error_msg = f"[ERROR] EEG analysis failed (Reclick the button, it will work.):\n{e}"
+        print(error_msg)
+        result_label.config(text=error_msg)
+
+
+def on_enter(e):
+    e.widget['bg'] = "#4a90e2"
+
+def on_leave(e):
+    e.widget['bg'] = "#357ABD"
+
+# GUI Setup
+root = tk.Tk()
+root.title("🎙️ Phoneme Pronouncer Pro")
+root.geometry("1000x2000")
+root.configure(bg="#1e1e2e")
+root.resizable(False, False)
+
+# Fonts & Colors
+FONT_TITLE = ("Segoe UI", 20, "bold")
+FONT_NORMAL = ("Segoe UI", 12)
+FONT_MONO = ("Courier New", 10)
+FG_COLOR = "#f8f8f2"
+BG_COLOR = "#1e1e2e"
+ENTRY_BG = "#2e2e3e"
+BTN_BG = "#357ABD"
+BTN_FG = "#ffffff"
+
+# Title
+tk.Label(root, text="Phoneme Pronouncer Pro", font=FONT_TITLE, fg="#89ddff", bg=BG_COLOR).pack(pady=20)
+
+# Entry Field
+tk.Label(root, text="Type a word or phrase below:", font=FONT_NORMAL, fg=FG_COLOR, bg=BG_COLOR).pack()
+entry = tk.Entry(root, font=("Segoe UI", 14), width=30, bg=ENTRY_BG, fg=FG_COLOR, insertbackground=FG_COLOR, relief="flat")
+entry.pack(ipady=6, pady=10)
+
+# Buttons
+global btn_pronounce
+btn_frame = tk.Frame(root, bg=BG_COLOR)
+btn_frame.pack(pady=10)
+
+
+btn1 = tk.Button(btn_frame, text="🔍 Get Phonemes", command=show_phonemes, font=FONT_NORMAL, bg=BTN_BG, fg=BTN_FG,
+                 activebackground="#4a90e2", relief="flat", padx=20, pady=8, cursor="hand2")
+btn1.pack(side="left", padx=10)
+btn1.bind("<Enter>", on_enter)
+btn1.bind("<Leave>", on_leave)
+
+btn2 = tk.Button(btn_frame, text="🔊 Pronounce", command=pronounce_result, font=FONT_NORMAL, bg=BTN_BG, fg=BTN_FG,
+                 activebackground="#4a90e2", relief="flat", padx=20, pady=8, cursor="hand2")
+btn2.pack(side="left", padx=10)
+btn_pronounce = btn2
+btn2.bind("<Enter>", on_enter)
+btn2.bind("<Leave>", on_leave)
+
+# New Copy Button
+btn3 = tk.Button(btn_frame, text="📋 Copy Phonemes", command=copy_phonemes, font=FONT_NORMAL, bg=BTN_BG, fg=BTN_FG,
+                 activebackground="#4a90e2", relief="flat", padx=20, pady=8, cursor="hand2")
+btn3.pack(side="left", padx=10)
+btn3.bind("<Enter>", on_enter)
+btn3.bind("<Leave>", on_leave)
+
+btn4 = tk.Button(btn_frame, text="🧠 Ask LaRocco", command=ask_larocco_gpt, font=FONT_NORMAL, bg=BTN_BG, fg=BTN_FG,
+                 activebackground="#4a90e2", relief="flat", padx=20, pady=8, cursor="hand2")
+btn4.pack(side="left", padx=10)
+btn4.bind("<Enter>", on_enter)
+btn4.bind("<Leave>", on_leave)
+
+btn5 = tk.Button(btn_frame, text="🧬 Visualize Metabolic Flow", command=analyze_eeg_input, font=FONT_NORMAL, bg=BTN_BG, fg=BTN_FG,
+                 activebackground="#4a90e2", relief="flat", padx=20, pady=8, cursor="hand2")
+btn5.pack(side="left", padx=10)
+btn5.bind("<Enter>", on_enter)
+btn5.bind("<Leave>", on_leave)
+
+
+# Result Label
+result_label = tk.Label(root, text="", wraplength=500, justify="center", font=("Consolas", 13), bg=BG_COLOR, fg="#a6e3a1")
+result_label.pack(pady=20)
+
+# Log Label
+tk.Label(root, text="📝 Conversation Log", font=("Segoe UI", 14, "bold"), fg="#cba6f7", bg=BG_COLOR).pack(pady=(10, 0))
+
+# Scrollable Text Widget for Log
+log_frame = tk.Frame(root, bg=BG_COLOR)
+log_frame.pack(pady=5)
+
+log_scrollbar = tk.Scrollbar(log_frame)
+log_scrollbar.pack(side="right", fill="y")
+
+log_text = tk.Text(log_frame, height=10, width=80, font=("Consolas", 11), bg="#2e2e3e", fg="#cdd6f4",
+                   yscrollcommand=log_scrollbar.set, wrap="word", relief="flat")
+log_text.pack()
+log_scrollbar.config(command=log_text.yview)
+log_text.configure(state='disabled')
+
+
+# ARPAbet Reference
+tk.Label(root, text="📘 ARPAbet Phoneme Reference", font=("Segoe UI", 14, "bold"), fg="#ffcb6b", bg=BG_COLOR).pack(pady=(10, 0))
+
+phoneme_text = tk.Text(root, height=15, width=60, font=FONT_MONO, bg="#2e2e3e", fg=FG_COLOR, bd=0, relief="flat")
+phoneme_text.pack(pady=10)
+phoneme_text.insert(tk.END, ARPAbet_PHONEMES)
+phoneme_text.configure(state='disabled')
+
+
+def convert_eeg_tsv_to_csv(input_tsv_path: str, output_csv_path: str):
+    """
+    Convert EEG .tsv file into .csv with original Index and cumulative Time in seconds.
+    Each 256 samples = 1 second of EEG data.
+    """
+    headers = [
+        "Index", "Fp1", "Fp2", "F3", "F4", "T5", "T6", "O1", "O2", "F7", "F8", "C3", "C4",
+        "T3", "T4", "P3", "P4", "Accel Channel 0", "Accel Channel 1", "Accel Channel 2",
+        "Other", "Other", "Other", "Other", "Other", "Other", "Other",
+        "Analog Channel 0", "Analog Channel 1", "Analog Channel 2", "Timestamp", "Other"
+    ]
+
+    eeg_channels = [
+        "Fp1", "Fp2", "F3", "F4", "T5", "T6", "O1", "O2",
+        "F7", "F8", "C3", "C4", "T3", "T4", "P3", "P4"
+    ]
+
+    df = pd.read_table(input_tsv_path, sep="\t", header=None)
+    df.columns = headers
+
+    num_rows = len(df)
+
+    # Time in seconds: 256 rows = 1 second
+    time_col = [round(i / 256, 8) for i in range(num_rows)]
+
+    # Extract EEG + add Time, keep original Index from TSV
+    df_eeg = df[["Index"] + eeg_channels].copy()
+    df_eeg.insert(1, "Timestamp", time_col)
+
+    df_eeg.to_csv(output_csv_path, index=False)
+
+
+
+# Run Application
+root.mainloop()
