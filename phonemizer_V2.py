@@ -34,6 +34,9 @@ import tempfile
 import sys
 import os
 
+from langchain_core.runnables import RunnableLambda
+
+
 # Tell Python to look in the EEG folder
 sys.path.append(os.path.join(os.path.dirname(__file__), "thinkthank_with_changes_and_clearmind"))
 
@@ -125,7 +128,6 @@ retrieval_chain = create_retrieval_chain(
     combine_docs_chain=combine_docs_chain
 )
 
-from langchain_core.runnables import RunnableLambda
 
 def wrap_with_output_key(response):
     return {"output": response.get("answer", response.get("result", "[No response]"))}
